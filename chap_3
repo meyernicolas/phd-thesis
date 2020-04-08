@@ -1,0 +1,419 @@
+# This code  is related to the Chapter 2 of my PhD thesis
+# "Tail inference for high-dimensional data"
+
+rm(list=ls())
+library(rlang)
+set.seed(12)
+
+# 1. Some auxiliary functions
+
+list_of_thresholds <- function(v){
+  # This function gives the list of all thresholds for which
+  # the vector v has a different number of nonnull coordinates
+  d <- length(v)
+  u <- sort(v, TRUE)
+  threshold <- rep(0,d)
+  su <- cumsum(u)
+  
+  for(k in 1:(d-1)){
+    threshold[k] <- su[k]-k*u[k+1]}
+  threshold[d] <- su[d] # threshold above which the projection does not make sense
+  
+  return(threshold)
+}
+
+cones_function <- function(v, Gamma){
+  # This function gives the cones which contains the mass of Z
+  # with Gamma by decreasing order
+  d <- length(v)
+  ord <- order(v)
+  thres <- list_of_thresholds(v)
+  length_Gamma <- length(Gamma)
+  
+  J <- which(Gamma < thres[d], arr.ind = TRUE) # the coordinates of the useful Gamma
+  length_J <- length(J)
+  # the one that are too big provide a vector of NA
+  
+  cones <- matrix(NA, nrow = d, ncol = length_Gamma)
+  if (length_J > 0){
+    # Initialization
+    j <- J[1]
+    r1 <- sum(thres<Gamma[j]) + 1 # number of positive coordinates for the threshold Gamma[1]
+    cones[ord[1:(d-r1)], j] <- 0 # the coordinates on which v is not projected
+    cones[ord[seq2(d-r1+1, d)], j] <- 1 # the coordinates on which v is projected
+    
+    j <- J[2]
+    r2 <- d+2 # just need to be above d+1 I think
+  }
+  
+  if (length_J > 1){
+    # the loop
+    while ((r2 >= 1)&&(j<=length_Gamma)) {
+      r2 <- sum(thres<Gamma[j]) + 1 # number of positive coordinates for the threshold Gamma[1]
+      if (r2 <= d){
+        cones[ , j] <- cones[ , j-1]
+        cones[ord[seq2(d-r1+1, d-r2)], j] <- 0 # seq2 only works for increasing sequence which helps if r1 < r2
+      } # we let the NA if the Gamma[1] is too huge
+      j <- j + 1
+      r1 <- r2
+    }
+  }
+  return(cones)
+  # the result cones gives for each threshold of Gamma a cone in which the projected vector belongs
+}
+
+algo_general <- function(X, Gamma, n){ # need to specify the number of data = number of columns of X
+  # This algo take a matrix of data X, a list of thresholds Gamma
+  # and gives the highest threshold such that the central face is not relevant
+  d <- nrow(X)
+  length_Gamma <- length(Gamma)
+  
+  # Initializations: the "adjacency matrix"
+  binary <- apply(X, 2, cones_function, Gamma)
+  s_hat <- rep(NA, length_Gamma)
+  optim_list <- list() # for each k, a vector of s_tilde optimizations
+  theta_list <- list() # the vector of theta
+  result <- matrix(NA, ncol = 4)
+  colnames(result) <- c("k", "s_tilde", "hat_s", "minimizer")
+  
+  for ( j in 1:length_Gamma ){
+    
+    binary_bis <- binary[( (j-1)*d + 1 ): (j*d) , !is.na(binary[(j-1)*d+1, ]) ]
+    # we remove the columns of NA of the considered block
+    k <- ncol(binary_bis) # it corresponds to k_n
+    M <- matrix(NA, nrow = d+1)
+    
+    # THE LOOP
+    while (ncol(binary_bis) > 0){
+      vect <- binary_bis[ , 1] # we take the first column vector of binary: we call it 'vect'
+      vect_identical <- apply(binary_bis, 2, identical, vect) # we check in which position(s) vect' appears in "binary"
+      numb_vect_identical <- sum(vect_identical) # we compute how many times 'vect' appears in "binary"
+      M <- cbind(M, rbind (as.matrix(binary_bis[ , 1]), numb_vect_identical))
+      # we add this vector in a matrix M, and add the number of occurence
+      binary_bis <- as.matrix(binary_bis[ , -which(vect_identical==TRUE)]) # we remove 'vect' from "binary"
+    }
+    M <- as.matrix(M[ , -1]) # because the first column in composed of NA (I do not know how to deal with this)
+    # We order the matrix M in increasing order
+    ordered_subcones <- order(M[d+1, ], decreasing=TRUE)
+    M <- as.matrix(M[ , ordered_subcones])
+    
+    # Some statistical parameters
+    s_tilde <- ncol(M)
+    T <- M[(d+1), ] # the estimator hat(T)_n (for a fixed k)
+    
+    # we now opitmize in s_hat
+    if (s_tilde > 1){
+      optim_vect <- 1:(s_tilde-1) - lfactorial(k) + k*log(k) + sum(lfactorial(T)) - cumsum(T[-s_tilde]*(log(T)[-s_tilde])) - (k-cumsum(T[-s_tilde]))*log( (k-cumsum(T[-s_tilde])) / ( s_tilde -(1:(s_tilde-1)) ) )
+      #optim_vect <- 2*(1:(s_tilde-1)) + 2*sum(lfactorial(T)) - 2*cumsum(T[-s_tilde]*(log(T)[-s_tilde])) - 2*(k-cumsum(T[-s_tilde]))*log( (k-cumsum(T[-s_tilde])) / ( s_tilde -(1:(s_tilde-1)) ) )
+      s_hat <- which.min(optim_vect)
+    }else{
+      optim_vect <- NA
+      s_hat <- 1
+    }
+    minimizer <- (optim_vect[s_hat])/k
+    #- (n-k)*log( (1-k/n) ) - k*log( (k/n) ) - lfactorial(n) + lfactorial(k) + lfactorial(n-k))/k
+    #minimizer <- (optim_vect[s_hat] + lfactorial(k) - sum(lfactorial(T)))/k 
+    
+    optim_list[[j]] <- optim_vect
+    theta_list[[j]] <- T[1:s_hat]/sum(T[1:s_hat])
+    
+    result <- rbind(result, c(k, s_tilde, s_hat, minimizer)) # a summary of the result
+  }
+  result <- result[-1, ] # we have to remove the first row of NA's
+  
+  return( list(result, optim_list, M, theta_list) )
+}
+
+algo_extremes <- function(X, Proportion){
+  # The function "algo_extremes" does the same as "algo_general", the only difference is that
+  # the thresholds 'Gamma' are given by a given proportion of vectors we want to keep
+  n <- ncol(X)
+  p <- length(Proportion) # Proportion should be given in an increasing order
+  
+  sum_norm <- apply(X, 2, sum)
+  sort_sum_norm <- sort(sum_norm, decreasing = TRUE)
+  
+  Thresholds <- sort_sum_norm[round(n*Proportion+1, 0)] # this corresponds to the list of thresholds u_n
+  # we use the function 'round' since otherwise there are some approximations in n*Proportion
+  X <- X[ , sum_norm>Thresholds[p]] # this is done only to avoid computing too many NA's
+  
+  result <- algo_general(X, Thresholds, n)
+  return(result)
+}
+
+# Actually the choice of k is given by the optimal value of the KL
+# The following function uses the previous algo, chooses the optimal k,
+# and give the associated subsets on which the spectral measure places mass
+relevant_subsets <- function(X, Proportion){
+  # X given, k given -> we give the relevant subcones
+  n <- ncol(X)
+  d <- nrow(X)
+  
+  list_of_results <- algo_extremes(X, Proportion)
+  
+  which_k_hat <- which.min(list_of_results[[1]][ , 4]) # which k_hat is choosen
+  k_hat <- list_of_results[[1]][which_k_hat , 1] #k_hat
+  s_hat <- list_of_results[[1]][which_k_hat , 3] #s_hat
+  theta_hat <- list_of_results[[4]][[which_k_hat]]
+  
+  # We select the s_tilde cones for this k
+  sum_norm <- apply(X, 2, sum)
+  sort_sum_norm <- sort(sum_norm, decreasing = TRUE)
+  u <- sort_sum_norm[round(k_hat + 1, 0)] #u_n
+  X <- X[ , sum_norm > u] # to improve the computation
+  
+  binary <- apply(X, 2, cones_function, u)
+  M <- matrix(NA, nrow = d+1)
+  
+  # The classification of the cones
+  while (ncol(binary) > 0){
+    vect <- binary[ , 1] # we take the first column vector of binary: we call it 'vect'
+    vect_identical <- apply(binary, 2, identical, vect) # we check in which position(s) vect' appears in "binary"
+    numb_vect_identical <- sum(vect_identical) # we compute how many times 'vect' appears in "binary"
+    M <- cbind(M, rbind (as.matrix(binary[ , 1]), numb_vect_identical))
+    # we add this vector in a matrix M1, and add the number of occurence
+    
+    binary <- as.matrix(binary[ , -which(vect_identical==TRUE)]) # we remove 'vect' from "binary"
+  }
+  M <- t(t(M[ , -1])) # because the first column in composed of NA (do not know how to deal with this)
+  
+  # We order the matrix M in increasing order
+  ordered_subcones <- order(M[d+1, ], decreasing=TRUE)
+  M <- as.matrix(M[ , ordered_subcones])
+  
+  return(list(M, k_hat, u, s_hat, theta_hat))
+}
+
+
+####################
+# Simulations
+####################
+
+
+#####
+# 1. Some plots
+#####
+prop <- seq(0.005, 0.15, by = 0.005)
+prop
+length(prop)
+
+d <- 10^2 # dimension
+
+#####
+# 1.1 An independent example
+#####
+d_ext <- 30
+n1plot <- 10^4
+Xa <- matrix(1/runif( n1plot*d_ext), ncol = n1plot, nrow = d_ext) # Pareto 1: x -> 1/x
+Xb <- matrix(rexp( n1plot*(d-d_ext)), ncol = n1plot, nrow = d-d_ext) # Exponential: x -> e^(-x)
+X1 <-rbind(Xa,Xb)
+
+ptm <- proc.time()
+result1 <- algo_extremes(X1, prop)
+proc.time()-ptm
+which_k1 <- which.min(result1[[1]][ , 4])
+which_k1
+k1 <- result1[[1]][which_k1 , 1]
+k1
+plot(result1[[1]][ , 1], result1[[1]][ , 4], type='l', xlab = "k", ylab = "KL(n)")
+lines( x=c(k1,k1), y=c(0,result1[[1]][ which_k1, 4]), lty=2, lwd=3)
+text(k1+20, 0.62, paste("k_star =", k1))
+
+plot(result1[[1]][ , 1], result1[[1]][ , 3], type='l', xlab = "k", ylab = "s0 = argmin KL(k)")
+lines( x=c(k1,k1), y=c(0,result1[[1]][ which_k1, 3]), lty=2, lwd=3)
+lines( x=c(0,k1), y=c(result1[[1]][ which_k1, 3],result1[[1]][ which_k1, 3]), lty=2, lwd=3)
+
+
+#####
+# 1.2 A second example of plot
+#####
+n3plot <- 10^4
+d3 <- 10^2 # dimension
+d3_indep <- 10 # the first 10 coordinates are RV independent
+d3_dep1 <- 5 # 5 couples of RV dependent => dim = 5*2=10
+d3_dep2 <- 5 # 5 triplets of RV dependent => dim = 5*3 = 15
+d3_tot <- d3_indep + 2*d3_dep1 + 3*d3_dep2
+n_faces <-d3_indep + d3_dep1 + d3_dep2 # number of subsets which should appear
+
+A <- matrix(1/runif(n3plot*d3_indep), ncol = n3plot, nrow = d3_indep) # Pareto 1: x -> 1/x
+
+# The first dependent part dim = 2*5=10
+B <- rep(NA, n3plot)
+for (i in 1:d3_dep1){
+  b_1 <- 1/runif(n3plot) # pareto(1)
+  b_2 <- b_1 + rexp(n3plot) # the same pareto but perturbed by a normal
+  B <- rbind(B,b_1, b_2)
+}
+B <- B[-1, ]
+
+# The second dependent part
+C <- rep(NA, n3plot)
+for (i in 1:d3_dep1){
+  c_1 <- 1/runif(n3plot) # pareto(1)
+  c_2 <- c_1 + rexp(n3plot) # the same pareto but perturbed by a normal
+  c_3 <- c_1 + rexp(n3plot) # the same pareto but perturbed by a normal
+  C <- rbind(C,c_1, c_2, c_3)
+}
+C <- C[-1, ]
+
+# The non RV part:  Exponential x -> e^(-x)
+D <- matrix(rexp(n3plot*(d3 - d3_indep - d3_dep1*2 - d3_dep2*3)), ncol = n3plot, nrow = d3 - d3_tot)
+# => dim = 55
+X3 <-rbind(A, B, C, D)
+
+result3 <- algo_extremes(X3, prop)
+which_k3 <- which.min(result3[[1]][ , 4])
+which_k3
+k3 <- result3[[1]][which_k3 , 1]
+k3
+plot(result3[[1]][ , 1], result3[[1]][ , 4], type='l', xlab = "k", ylab = "KL(n)")
+lines( x=c(k3,k3), y=c(0,result3[[1]][ which_k3, 4]), lty=2, lwd=3)
+text(k3, 0.55, paste("k_star =", k3))
+
+plot(result3[[1]][ , 1], result3[[1]][ , 3], type='l', xlab = "k", ylab = "s0 = argmin KL(k)")
+lines( x=c(k3,k3), y=c(0,result3[[1]][ which_k3, 3]), lty=2, lwd=3)
+lines( x=c(0,k3), y=c(result3[[1]][ which_k3, 3],result3[[1]][ which_k3, 3]), lty=2, lwd=3)
+
+
+#####
+# 2. Analysis of the average number of errors
+#####
+
+#####
+# 2.1 An independent example
+#####
+N <- 100 # number of simulations
+n1 <- c(4*10^3, 7*10^3, 10^4)
+length_n <- length(n1)
+
+output1 <- matrix(rep(0, length_n*5), nrow = length_n) # the error vector
+colnames(output1) <- c("Type 1", "Type 2", "s_0", "k", "u")
+rownames(output1) <- paste("n=", n1)
+
+
+# the theoretical matrix that should appear
+M_theor1 <- diag(rep(1,d_ext))
+
+for (r in 1:length_n){
+  for (l in 1:N){
+      Xa <- matrix(1/runif(n1[r]*d_ext), ncol = n1[r], nrow = d_ext) # Pareto 1: x -> 1/x
+      Xb <- matrix(rexp(n1[r]*(d-d_ext)), ncol = n1[r], nrow = d-d_ext) # Exponential: x -> e^(-x)
+      X <-rbind(Xa,Xb)
+      
+      ptm <- proc.time()
+      subsets <- relevant_subsets(X, prop)
+      print(proc.time()-ptm)
+      output1[r, 3] <- output1[r, 3] + subsets[[4]] # s_0
+      output1[r, 4] <- output1[r, 4] + subsets[[2]] # k
+      output1[r, 5] <- output1[r, 5] + subsets[[3]] # u
+      
+      M <- as.matrix(subsets[[1]][-(d+1), 1:(subsets[[4]])])# the empirical matrix
+      
+      submatrix_below <- as.matrix(M[(d_ext+1):d, ])
+      faces_below <- apply(submatrix_below, 2, sum)
+      output1[r, 1] <- output1[r, 1] + sum(faces_below > 0) # type 1
+      
+      submatrix_above <- as.matrix(M[1:d_ext, ])
+      #output1[r, 1] <- output1[r, 1] + sum(faces_above!=1) # type 1      
+      #output1[r, 2] <- output1[r, 2] + d_ext - sum(faces_above==1) # type 2
+      output1[r, 1] <- output1[r, 1] + # type 1
+        sum( tail( !duplicated( rbind(t(M_theor1), t(submatrix_above)) ), ncol(submatrix_above) ) )
+      
+      output1[r,2] <- output1[r,2] + # type 2
+        sum( tail( !duplicated( rbind(t(submatrix_above), t(M_theor1)) ), ncol(M_theor1) ) )
+
+      print(c(r,l))
+  }
+}
+output1/N
+
+#####
+# 2.2 A dependent example
+#####
+N <- 100 # number of simulations
+n3 <- c(4*10^3, 7*10^3, 10^4)
+length_n <- length(n3)
+
+prop <- seq(0.005, 0.15, by = 0.005)
+prop
+length(prop)
+
+output3 <- matrix(rep(0, length_n*5), nrow = length_n) # the error vector
+colnames(output3) <- c("Type 1", "Type 2", "s_0", "k", "u")
+rownames(output3) <- paste("n=", n3)
+
+d3 <- 10^2 # dimension
+d3_indep <- 10 # the first 10 coordinates are RV independent
+d3_dep1 <- 5 # 5 couples of RV dependent => dim = 5*2=10
+d3_dep2 <- 5 # 5 triplets of RV dependent => dim = 5*3 = 15
+d3_tot <- d3_indep + 2*d3_dep1 + 3*d3_dep2
+n_faces <-d3_indep + d3_dep1 + d3_dep2 # number of subsets which should appear
+
+# the theoretical matrix that shoul appear
+M_theor3 <- matrix(0, ncol=n_faces, nrow=d3_tot)
+diag(M_theor3[1:d3_indep, 1:d3_indep]) <- rep(1, d3_indep)
+M_theor3[(d3_indep+1):(d3_indep+2), d3_indep+1] <- c(1,1)
+M_theor3[(d3_indep+3):(d3_indep+4), d3_indep+2] <- c(1,1)
+M_theor3[(d3_indep+5):(d3_indep+6), d3_indep+3] <- c(1,1)
+M_theor3[(d3_indep+7):(d3_indep+8), d3_indep+4] <- c(1,1)
+M_theor3[(d3_indep+9):(d3_indep+10), d3_indep+5] <- c(1,1)
+M_theor3[(d3_indep+11):(d3_indep+13), d3_indep+6] <- c(1,1,1)
+M_theor3[(d3_indep+14):(d3_indep+16), d3_indep+7] <- c(1,1,1)
+M_theor3[(d3_indep+17):(d3_indep+19), d3_indep+8] <- c(1,1,1)
+M_theor3[(d3_indep+20):(d3_indep+22), d3_indep+9] <- c(1,1,1)
+M_theor3[(d3_indep+23):(d3_indep+25), d3_indep+10] <- c(1,1,1)
+
+for (r in 1:length_n){
+  for (l in 1:N){
+    # The independent part: dim = 10
+    A <- matrix(1/runif(n3[r]*d3_indep), ncol = n3[r], nrow = d3_indep) # Pareto 1: x -> 1/x
+    
+    # The first dependent part dim = 2*5=10
+    B <- rep(NA, n3[r])
+    for (i in 1:d3_dep1){
+      b_1 <- 1/runif(n3[r]) # pareto(1)
+      b_2 <- b_1 + rexp(n3[r]) # the same pareto but perturbed by a normal
+      B <- rbind(B,b_1, b_2)
+    }
+    B <- B[-1, ]
+    
+    # The second dependent part
+    C <- rep(NA, n3[r])
+    for (i in 1:d3_dep1){
+      c_1 <- 1/runif(n3[r]) # pareto(1)
+      c_2 <- c_1 + rexp(n3[r]) # the same pareto but perturbed by a normal
+      c_3 <- c_1 + rexp(n3[r]) # the same pareto but perturbed by a normal
+      C <- rbind(C,c_1, c_2, c_3)
+    }
+    C <- C[-1, ]
+    
+    # The non RV part:  Exponential x -> e^(-x)
+    D <- matrix(rexp(n3[r]*(d3 - d3_indep - d3_dep1*2 - d3_dep2*3)), ncol = n3[r], nrow = d3 - d3_tot)
+    # => dim = 65
+    
+    X3 <-rbind(A, B, C, D)
+    
+    subsets3 <- relevant_subsets(X3, prop)
+
+    output3[r, 3] <- output3[r, 3] + subsets3[[4]] # s_0
+    output3[r, 4] <- output3[r, 4] + subsets3[[2]] # k
+    output3[r, 5] <- output3[r, 5] + subsets3[[3]] # u
+    
+    M <- as.matrix(subsets3[[1]][-(d3+1), 1:(subsets3[[4]])])# the empirical matrix
+    
+    submatrix_below <- as.matrix(M[(d3_tot+1):d3, ])
+    faces_below <- apply(submatrix_below, 2, sum)
+    output3[r, 1] <- output3[r, 1] + sum(faces_below > 0) # type 1
+    
+    submatrix_above <- as.matrix(M[1:d3_tot, ])
+    
+    output3[r, 1] <- output3[r, 1] + # type 1
+      sum( tail( !duplicated( rbind(t(M_theor3), t(submatrix_above)) ), ncol(submatrix_above) ) )
+    
+    output3[r,2] <- output3[r,2] + # type 2
+      sum( tail( !duplicated( rbind(t(submatrix_above), t(M_theor3)) ), ncol(M_theor3) ) )
+    
+    print(c(r,l))
+  }
+}
+output3/N
