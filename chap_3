@@ -111,8 +111,6 @@ algo_general <- function(X, Gamma, n){ # need to specify the number of data = nu
       s_hat <- 1
     }
     minimizer <- (optim_vect[s_hat])/k
-    #- (n-k)*log( (1-k/n) ) - k*log( (k/n) ) - lfactorial(n) + lfactorial(k) + lfactorial(n-k))/k
-    #minimizer <- (optim_vect[s_hat] + lfactorial(k) - sum(lfactorial(T)))/k 
     
     optim_list[[j]] <- optim_vect
     theta_list[[j]] <- T[1:s_hat]/sum(T[1:s_hat])
