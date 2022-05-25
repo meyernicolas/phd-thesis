@@ -1,4 +1,4 @@
-# This code  is related to the Chapter 2 of my PhD thesis
+# This code  is related to the Chapter 3 of my PhD thesis
 # "Tail inference for high-dimensional data"
 
 rm(list=ls())
